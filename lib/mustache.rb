@@ -116,14 +116,7 @@ class Mustache
       templateify(data)
     end
 
-    return tpl.render(context) if ctx == {}
-
-    begin
-      context.push(ctx)
-      tpl.render(context)
-    ensure
-      context.pop
-    end
+    tpl.render(Context.new(ctx, self))
   end
 
   # Context accessors.
@@ -133,19 +126,28 @@ class Mustache
   #     view[:name] = "Jon"
   #     view.template = "Hi, {{name}}!"
   #     view.render # => "Hi, Jon!"
-  def [](key)
-    context[key.to_sym]
-  end
-
   def []=(key, value)
     context[key.to_sym] = value
   end
 
-  # A helper method which gives access to the context at a given time.
-  # Kind of a hack for now, but useful when you're in an iterating section
-  # and want access to the hash currently being iterated over.
   def context
-    @context ||= Context.new(self)
+    @context ||= {}
+  end
+
+  def to_hash
+    context
+  end
+
+  # A helper method which gives access to the global context
+  # from any mustache view at a given time. Kind of a hack for now,
+  # but useful when you're in an iterating section and want access
+  # to the object/hash currently being iterated over.
+  #
+  # Code related to this hack contains frame_tracker or FrameTracker.
+  attr_accessor :frame_tracker
+
+  def [](key)
+    frame_tracker.fetch(key, nil)
   end
 
   # Given a file name and an optional context, attempts to load and

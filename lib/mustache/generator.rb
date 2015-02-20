@@ -117,7 +117,7 @@ class Mustache
             p.otag, p.ctag = #{delims.inspect}
             p.compile(src)
           end
-          t.render(ctx.dup)
+          t.render(ctx)
         else
           # Shortcut when passed non-array
           v = [v] unless v.is_a?(Array) || v.is_a?(Mustache::Enumerable) || defined?(Enumerator) && v.is_a?(Enumerator)
@@ -149,7 +149,7 @@ class Mustache
     # which calls a partial at runtime instead of expanding and
     # including the partial's body to allow for recursive partials.
     def on_partial(name, offset, indentation)
-      ev("ctx.partial(#{name.to_sym.inspect}, #{indentation.inspect})")
+      ev("ctx.render_partial(#{name.to_sym.inspect}, #{indentation.inspect})")
     end
 
     # An unescaped tag.
@@ -157,7 +157,7 @@ class Mustache
       ev(<<-compiled)
         v = #{compile!(name)}
         if v.is_a?(Proc)
-          v = Mustache::Template.new(v.call.to_s).render(ctx.dup)
+          v = Mustache::Template.new(v.call.to_s).render(ctx)
         end
         v.to_s
       compiled
@@ -168,9 +168,9 @@ class Mustache
       ev(<<-compiled)
         v = #{compile!(name)}
         if v.is_a?(Proc)
-          v = Mustache::Template.new(v.call.to_s).render(ctx.dup)
+          v = Mustache::Template.new(v.call.to_s).render(ctx)
         end
-        ctx.escapeHTML(v.to_s)
+        ctx.escape(v.to_s)
       compiled
     end
 

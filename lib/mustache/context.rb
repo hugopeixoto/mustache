@@ -1,47 +1,93 @@
 require 'mustache/context_miss'
+require 'mustache/key_finder'
 
 class Mustache
+  class FrameTracker
+    attr_accessor :frame
+
+    def initialize frame
+      self.frame = frame
+    end
+
+    def update new_frame
+      self.frame = new_frame
+    end
+
+    def fetch(key, default)
+      self.frame.fetch key, default
+    end
+  end
+
+  class ContextFrame
+    attr_accessor :object, :previous_frame, :current_view
+
+    def initialize object, previous_frame
+      self.object = object
+      self.previous_frame = previous_frame
+
+      if object.is_a?(Mustache)
+        self.current_view = object
+      else
+        self.current_view = previous_frame.current_view
+      end
+    end
+
+    def fetch(key, default)
+      KeyFinder.find(self.object, key, default)
+    end
+
+    def frame_tracker
+      @frame_tracker ||= self.previous_frame.frame_tracker
+    end
+
+    def current_view= view
+      @current_view = view
+      view.frame_tracker = self.frame_tracker
+    end
+  end
+
+  class ContextRootFrame < ContextFrame
+    def initialize object
+      self.object = object
+
+      self.current_view = object
+    end
+
+    def frame_tracker
+      @frame_tracker ||= FrameTracker.new(self)
+    end
+  end
 
   # A Context represents the context which a Mustache template is
   # executed within. All Mustache tags reference keys in the Context.
   #
   class Context
+    attr_accessor :frame
 
     # Initializes a Mustache::Context.
     #
-    # @param [Mustache] mustache A Mustache instance.
+    # @param [Any] ctx Initial context.
+    # @param [Mustache] view A Mustache instance.
     #
-    def initialize(mustache)
-      @stack = [mustache]
+    def initialize(ctx, view)
+      if !ctx.is_a? ContextFrame
+        ctx = ContextFrame.new(ctx, ContextRootFrame.new(view))
+      end
+
+      self.frame = ctx
     end
 
     # A {{>partial}} tag translates into a call to the context's
-    # `partial` method, which would be this sucker right here.
+    # `render_partial` method, which would be this sucker right here.
     #
-    # If the Mustache view handling the rendering (e.g. the view
-    # representing your profile page or some other template) responds
-    # to `partial`, we call it and render the result.
+    # The partial is looked up in the current Mustache view. This
+    # view is also responsible for rendering the result.
     #
-    def partial(name, indentation = '')
-      # Look for the first Mustache in the stack.
-      mustache = mustache_in_stack
-
+    def render_partial(name, indentation = '')
       # Indent the partial template by the given indentation.
-      part = mustache.partial(name).to_s.gsub(/^/, indentation)
+      partial_template = current_view.partial(name).to_s.gsub(/^/, indentation)
 
-      # Call the Mustache's `partial` method and render the result.
-      mustache.render(part, self)
-    end
-
-    # Find the first Mustache in the stack.
-    #
-    # If we're being rendered inside a Mustache object as a context,
-    # we'll use that one.
-    #
-    # @return [Mustache] First Mustache in the stack.
-    #
-    def mustache_in_stack
-      @mustache_in_stack ||= @stack.find { |frame| frame.is_a?(Mustache) }
+      current_view.render(partial_template, self.frame)
     end
 
     # Allows customization of how Mustache escapes things.
@@ -50,8 +96,8 @@ class Mustache
     #
     # @return [String] Escaped HTML string.
     #
-    def escapeHTML(str)
-      mustache_in_stack.escapeHTML(str)
+    def escape(str)
+      current_view.escapeHTML(str)
     end
 
     # Adds a new object to the context's internal stack.
@@ -61,9 +107,7 @@ class Mustache
     # @return [Context] Returns the Context.
     #
     def push(new_obj)
-      @stack.unshift(new_obj)
-      @mustache_in_stack = nil
-      self
+      self.frame = ContextFrame.new(new_obj, self.frame)
     end
 
     # Removes the most recently added object from the context's
@@ -72,16 +116,7 @@ class Mustache
     # @return [Context] Returns the Context.
     #
     def pop
-      @stack.shift
-      @mustache_in_stack = nil
-      self
-    end
-
-    # Can be used to add a value to the context in a hash-like way.
-    #
-    # context[:name] = "Chris"
-    def []=(name, value)
-      push(name => value)
+      self.frame = frame.previous_frame
     end
 
     # Alias for `fetch`.
@@ -89,76 +124,58 @@ class Mustache
       fetch(name, nil)
     end
 
-    # Do we know about a particular key? In other words, will calling
-    # `context[key]` give us a result that was set. Basically.
-    def has_key?(key)
-      !!fetch(key, false)
-    rescue ContextMiss
-      false
-    end
-
     # Similar to Hash#fetch, finds a value by `name` in the context's
-    # stack. You may specify the default return value by passing a
+    # stack. You specify the default return value by passing a
     # second parameter.
     #
-    # If no second parameter is passed (or raise_on_context_miss is
-    # set to true), will raise a ContextMiss exception on miss.
-    def fetch(name, default = :__raise)
-      @stack.each do |frame|
-        # Prevent infinite recursion.
-        next if frame == self
+    # If raise_on_context_miss is set to true, this will raise a ContextMiss exception on miss.
+    def fetch(name, default)
+      current_frame = self.frame
 
-        value = find(frame, name, :__missing)
+      while current_frame
+        value = current_frame.fetch(name, :__missing)
+
         return value if value != :__missing
+
+        current_frame = current_frame.previous_frame
       end
 
-      if default == :__raise || mustache_in_stack.raise_on_context_miss?
-        raise ContextMiss.new("Can't find #{name} in #{@stack.inspect}")
+      if current_view.raise_on_context_miss?
+        raise ContextMiss.new("Can't find #{name} in context stack")
       else
         default
       end
     end
 
-    # Finds a key in an object, using whatever method is most
-    # appropriate. If the object is a hash, does a simple hash lookup.
-    # If it's an object that responds to the key as a method call,
-    # invokes that method. You get the idea.
-    #
-    # @param [Object] obj The object to perform the lookup on.
-    # @param [String,Symbol] key The key whose value you want
-    # @param [Object] default An optional default value, to return if the key is not found.
-    #
-    # @return [Object] The value of key in object if it is found, and default otherwise.
-    #
-    def find(obj, key, default = nil)
-      return find_in_hash(obj.to_hash, key, default) if obj.respond_to?(:to_hash)
-
-      key = to_tag(key)
-      return default unless obj.respond_to?(key)
-
-      meth = obj.method(key) rescue proc { obj.send(key) }
-      meth.arity == 1 ? meth.to_proc : meth.call
+    def find(obj, key)
+      KeyFinder.find(obj, key, nil)
     end
 
     def current
-      @stack.first
+      frame.object
     end
 
 
     private
 
-
-    # If a class, we need to find tags (methods) per Parser::ALLOWED_CONTENT.
-    def to_tag key
-      key.to_s.include?('-') ? key.to_s.tr('-', '_') : key
+    # Change current frame.
+    #
+    # This notifies the frame tracker every time a frame change occurs.
+    # This is related to the frame_tracker hack
+    def frame= frame
+      @frame = frame
+      frame.frame_tracker.update(frame)
     end
 
-    # Fetches a hash key if it exists, or returns the given default.
-    def find_in_hash(obj, key, default)
-      return obj[key]      if obj.has_key?(key)
-      return obj[key.to_s] if obj.has_key?(key.to_s)
-
-      obj.fetch(key, default)
+    # Find the first Mustache in the stack.
+    #
+    # If we're being rendered inside a Mustache object as a context,
+    # we'll use that one.
+    #
+    # @return [Mustache] First Mustache in the stack.
+    #
+    def current_view
+      frame.current_view
     end
   end
 end
