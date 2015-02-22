@@ -108,9 +108,7 @@ class Mustache
       # inside the section.
       ev(<<-compiled)
       if v = #{compile!(name)}
-        if v == true
-          #{code}
-        elsif v.is_a?(Proc)
+        if v.is_a?(Proc)
           t = Mustache::Template.new(v.call(#{raw.inspect}).to_s)
           def t.tokens(src=@source)
             p = Parser.new
@@ -139,7 +137,7 @@ class Mustache
       # what's inside.
       ev(<<-compiled)
       v = #{compile!(name)}
-      if v.nil? || v == false || v.respond_to?(:empty?) && v.empty?
+      if !v || v.respond_to?(:empty?) && v.empty?
         #{code}
       end
       compiled
@@ -180,11 +178,15 @@ class Mustache
       names = names.map { |n| n.to_sym }
 
       initial, *rest = names
-      <<-compiled
-        #{rest.inspect}.reduce(ctx[#{initial.inspect}]) { |value, key|
-          value && ctx.find(value, key)
-        }
-      compiled
+      if rest.empty?
+        "ctx[#{initial.inspect}]"
+      else
+        <<-compiled
+          #{rest.inspect}.reduce(ctx[#{initial.inspect}]) { |value, key|
+            value && ctx.find(value, key)
+          }
+        compiled
+      end
     end
 
     # An interpolation-friendly version of a string, for use within a
